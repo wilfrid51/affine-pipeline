@@ -1,0 +1,10 @@
+services:
+  api:
+    image: affine:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  watchtower:
+    profiles:
+      - production

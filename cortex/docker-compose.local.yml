@@ -1,0 +1,15 @@
+# This file is an override; do not run alone.
+# Use together with docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+version: "3.8"
+
+services:
+  validator:
+    image: affine:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  watchtower:
+    profiles:
+      - production

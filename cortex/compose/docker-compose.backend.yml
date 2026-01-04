@@ -1,0 +1,104 @@
+services:
+  # API Server - Central API service
+  api:
+    image: affinefoundation/affine:latest
+    container_name: affine-api
+    restart: unless-stopped
+    mem_reservation: "2g"
+    mem_limit: "4g"
+    volumes:
+      - /var/log/affine/api:/var/log/affine/api
+    ports:
+      - "8000:8000"
+    environment:
+      - API_HOST=0.0.0.0
+      - API_SERVICES_ENABLED=true
+      - API_RATE_LIMIT_ENABLED=false
+      - API_LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
+      interval: 60s
+      timeout: 3s
+      retries: 3
+      start_period: 180s
+    command: ["-v", "servers", "api"]
+
+  # Scheduler - Task generation service
+  scheduler:
+    image: affinefoundation/affine:latest
+    container_name: affine-scheduler
+    restart: unless-stopped
+    mem_reservation: "2g"
+    mem_limit: "4g"
+    volumes:
+      - /var/log/affine/scheduler:/var/log/affine/scheduler
+    command: ["-v", "servers", "scheduler"]
+
+  # Executor - Task execution service
+  executor:
+    image: affinefoundation/affine:latest
+    container_name: affine-executor
+    restart: unless-stopped
+    mem_reservation: "4g"
+    mem_limit: "8g"
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.ssh:/root/.ssh
+      - ~/.bittensor/wallets:/root/.bittensor/wallets:ro
+      - /var/log/affine/executor:/var/log/affine/executor
+      - ./affinetes_hosts.json:/app/affinetes_hosts.json
+    environment:
+      - API_URL=http://api:8000/api/v1
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["-v", "servers", "executor"]
+
+  # Miners Monitor - Miner synchronization service
+  monitor:
+    image: affinefoundation/affine:latest
+    container_name: affine-monitor
+    restart: unless-stopped
+    mem_reservation: "2g"
+    mem_limit: "4g"
+    env_file:
+      - .env
+    volumes:
+      - /var/log/affine/monitor:/var/log/affine/monitor
+    command: ["-v", "servers", "monitor"]
+
+  # Scorer - Weight calculation service
+  scorer:
+    image: affinefoundation/affine:latest
+    container_name: affine-scorer
+    restart: unless-stopped
+    mem_reservation: "4g"
+    mem_limit: "8g"
+    volumes:
+      - /var/log/affine/scorer:/var/log/affine/scorer
+    environment:
+      - API_URL=http://api:8000/api/v1
+      - SCORER_SAVE_TO_DB=true
+      - SERVICE_MODE=true
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["-v", "servers", "scorer"]
+
+  watchtower:
+    image: nickfedor/watchtower
+    container_name: affine-backend-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 30 affine-api affine-scheduler affine-executor affine-monitor affine-scorer
+
+networks:
+  default:
+    name: affine-backend
