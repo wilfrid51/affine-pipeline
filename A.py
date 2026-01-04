@@ -4,6 +4,8 @@ import time
 import subprocess
 import sys
 import threading
+import shlex
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from typing import List
@@ -23,19 +25,52 @@ BATCH_DELAY_SECONDS = 1.0  # delay between batches
 # Run the python code in the out and catch output
 # example: run_with_venv("math/.venv/bin/python", "math/dot_product.py", args=["--flag", "1"], cwd="math", input=inp, run_id=i)
 # ------------------------
-def run_with_venv(venv_python, script, args=(), cwd=None, input=None, run_id=None):
-    """Create and return a subprocess. Does not handle output."""
+def run_with_venv(activate_script, command, cwd=None, input=None, run_id=None, env=None):
+    """
+    Start a subprocess that runs `command` after sourcing a venv activate script.
+
+    activate_script: path to ".venv/bin/activate" (or equivalent)
+    command: list/tuple of args (recommended) OR a single shell string
+    cwd: working directory (optional)
+    input: text to write to stdin (optional). If input is not None, stdin is opened.
+    env: dict of extra env vars to add/override (optional)
+    """
     base = Path.cwd()
-    resolve = lambda p: base / p if not Path(p).is_absolute() else Path(p)
-    cmd = [str(resolve(venv_python)), str(resolve(script)), *map(str, args)]
-    cwd = str(resolve(cwd)) if cwd else None
-    
-    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        stdin=subprocess.PIPE if input else None, text=True, bufsize=1)
-    if input:
+
+    def resolve(p):
+        p = Path(p)
+        return (base / p) if not p.is_absolute() else p
+
+    act_path = resolve(activate_script)
+    cwd_path = resolve(cwd) if cwd else None
+
+    # Build the command string safely
+    if isinstance(command, (list, tuple)):
+        cmd_str = " ".join(shlex.quote(str(x)) for x in command)
+    else:
+        cmd_str = str(command)
+
+    bash_line = f"source {shlex.quote(str(act_path))} && {cmd_str}"
+
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update({k: str(v) for k, v in env.items()})
+
+    p = subprocess.Popen(
+        ["bash", "-lc", bash_line],
+        cwd=str(cwd_path) if cwd_path else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE if input is not None else None,
+        text=True,
+        bufsize=1,
+        env=merged_env,
+    )
+
+    if input is not None:
         p.stdin.write(input)
         p.stdin.close()
-    
+
     return p, run_id
 
 # --------------------------
@@ -101,8 +136,8 @@ def catch_output(process, conn, run_id=None):
                 break
             else:
                 file = sys.stdout
-                if not send_text(conn, f"{prefix}{line[1:]}"):
-                    fail_count += 1
+                # if not send_text(conn, f"{prefix}{line[1:]}"):
+                    # fail_count += 1
             print(f"{prefix}{line[1:]}", file=sys.stderr if is_stderr else sys.stdout, flush=True)
 
     t1 = threading.Thread(target=read, args=(process.stdout, stdout_lines), daemon=True)
@@ -130,16 +165,16 @@ def get_evaluate_fail(conn) -> List[int]:
     # Run enough evaluataion scripts but for now, just run 5.
 
     # config
-    max_concurrency = 5      # Only 5 processes running at the same time
-    dpo_sample_count = 100 # at least 1e4 tasks for dpo
+    max_concurrency = 1      # Only 5 processes running at the same time
+    dpo_sample_count = 1   # at least 1e4 tasks for dpo
 
-    def run_single(i, env, start_pos):
+    def run_single(i, env):
         print(f"[Run {i}] Starting...", flush=True)
         # evaluate.py --env ABD-V2 --model your-model --base-url http://172.17.0.1:30000/v1 --samples 10
-        # TODO: change start & end here
-        process, run_id = run_with_venv("af eval",
-                                    # args=["--env", env, "--base-url", f"http://{SERVER2_IP}:{SERVER2_PORT+i%5}/v1", "--start", start_pos, "--end", start_pos + 100], cwd="cortex", input="", run_id=i)
-                                    args=["--env", env, "--base-url", f"http://66.153.184.201:3039/v1", "--model", "testmodel"], cwd="cortex", input="", run_id=i)
+        process, run_id = run_with_venv(
+            activate_script="cortex/.venv/bin/activate",
+            command=["af", "eval", "--env", env, "--base-url", f"http://66.153.184.201:3033/v1", "--model", "Qwen/Qwen3-4B"],
+        )
         return i, catch_output(process, conn, run_id)
 
     # running...
@@ -151,10 +186,9 @@ def get_evaluate_fail(conn) -> List[int]:
         while dpo_sample_count > 0:
             while len(futures) < max_concurrency:
                 import random
-                env_name = "ABD"
-                start_pos = random.randint(0, 23000)
-                print(f"[Run {run_id}] Starting... {env_name} {start_pos} -> {start_pos + 100}...")
-                future = ex.submit(run_single, run_id, env_name, start_pos)
+                env_name = "GAME"
+                print(f"[Run {run_id}] Starting... {env_name}...")
+                future = ex.submit(run_single, run_id, env_name)
                 futures[future] = run_id
                 run_id += 1
 
@@ -167,13 +201,6 @@ def get_evaluate_fail(conn) -> List[int]:
                 del futures[f]
                 break
 
-            for i in results:
-                result = results[i]
-                total_tasks += len(result.stdout.split("\n")) - 1
-                for line in result.stdout.split("\n"):
-                    if line.startswith("✅"):
-                        succ_task += 1
-                fail_task += result.fail_count
             results.clear()
                 
         for f in as_completed(futures):
